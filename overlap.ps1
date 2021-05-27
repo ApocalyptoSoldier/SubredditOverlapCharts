@@ -3,33 +3,91 @@
 # Also some of the code is transpiled from their javascript
 # I did not ask their permission, let's hope they either don't find out or don't care
 
-# TODO: Combine these two functions and Invoke-WebRequest to return the dist from a given url
-function JsonToDict
-{
-	param($json)
-	
-	[System.Collections.Generic.Dictionary[int,int]]$dict = @{}
-	
-	(ConvertFrom-Json $json).PSObject.Properties | Foreach { $dict[$_.Name] = $_.Value }
-	
-	return $dict
-}
+# TODO: Set correct data types for variables and parameters
 
-function histToDist 
+function Get-Dist
 {
-	param($Hist)
+	param([string]$Uri)
 	
-	$Sum = ($Hist.Values | Measure -Sum).Sum
+	# Get the history data
+	$json = ConvertFrom-Json (Invoke-WebRequest -Uri $Uri).Content
 	
-	[System.Collections.Generic.Dictionary[int,double]]$returnDict = @{};
+	# Convert the history data to a dictionary
+	[System.Collections.Generic.Dictionary[int,int]]$histDict = @{}
 	
-	foreach ($sub in $Hist.Keys)
+	$json.PSObject.Properties | Foreach { $histDict[$_.Name] = $_.Value }
+	
+	# Calculate the distance dictionary from the history dictionary
+	[System.Collections.Generic.Dictionary[int,double]]$distDict = @{};
+	
+	$Sum = ($histDict.Values | Measure -Sum).Sum
+	
+	foreach ($sub in $histDict.Keys)
 	{
-		$returnDict[$sub] = [Math]::Round(($Hist[$sub] / $sum), 5)
+		$distDict[$sub] = [Math]::Round(($histDict[$sub] / $Sum), 5)
 	}
 	
-	return $returnDict
+	# Return the distance dictionary
+	return $distDict
 }
+
+function Get-Multipliers
+{
+	param(
+			[System.Collections.Generic.Dictionary[int,double]]
+			$subredditsIdDist,
+			
+			[System.Collections.Generic.Dictionary[int,double]]
+			$globalSubredditsIdDist
+		)
+	
+	[System.Collections.Generic.Dictionary[int,double]]$subredditsProbMultipliers = @{};
+	
+	foreach ($sub in $subredditsIdDist.Keys)
+	{
+		$globalDist = $globalSubredditsIdDist[$sub]
+		$prob 	    = $subredditsIdDist[$sub]
+		
+		# ignore super rare subreddits (<0.1% chance that average user has visited)
+		if ($globalDist -lt 0.0001)
+		{
+			continue;
+		}
+		
+		$multiplier = $prob / $globalDist;
+		
+		# This means that users are actually less likely than the average user to visit
+		# TODO: Decide if I want to move this threshold to the config file
+		if ($multiplier -lt 1)
+		{
+			continue;
+		}
+		
+		$subredditsProbMultipliers[$sub] = $multiplier
+	}
+	
+	return $subredditsProbMultipliers
+}
+	
+# TODO: See if I can return a dictionary of ids to names
+function Get-NamesFromIds
+{
+	param([System.Collections.ArrayList]$Ids)
+	
+	$body = @{
+		subredditIds = $Ids
+	}
+
+	$names = Invoke-RestMethod -Uri "https://subredditstats.com/api/specificSubredditIdsToNames" `
+		-Method 'POST' `
+		-Headers @{ "Content-Type" = "text/plain" } `
+		-Body ($body | ConvertTo-Json)
+		
+	return $names
+}
+
+# Start Process Data
+
 
 . .\config.ps1
 
@@ -37,64 +95,24 @@ function histToDist
 $encoded = [uri]::EscapeDataString($subredditToCheck)
 $delay   = (Get-Random -Min 0 -Max 0.99).ToString() -replace ',', '.'
 
-$globalSubredditsHist = JsonToDict (Invoke-WebRequest -Uri "https://subredditstats.com/api/globalSubredditsIdHist?v=$delay}").Content
-
-$globalSubredditsDist = histToDist $globalSubredditsHist;
-
-$subredditsIdHist = JsonToDict (Invoke-WebRequest -Uri "https://subredditstats.com/api/subredditNameToSubredditsHist?subredditName=$encoded&v=$delay").Content
-
-$subredditsIdDist = histToDist $subredditsIdHist;
+$globalSubredditsIdDist = Get-Dist -Uri "https://subredditstats.com/api/globalSubredditsIdHist?v=$delay}"
+$subredditsIdDist		= Get-Dist -Uri "https://subredditstats.com/api/subredditNameToSubredditsHist?subredditName=$encoded&v=$delay"
 # End Get data
 
 
 # Start Process Data
-[System.Collections.Generic.Dictionary[int,double]]$subredditsProbMultipliers = @{};
+[System.Collections.Generic.Dictionary[int,double]]$subredditsProbMultipliers = Get-Multipliers $subredditsIdDist $globalSubredditsIdDist
 
-foreach($sub in $subredditsIdDist.Keys) {
-	$globalDist = $globalSubredditsDist[$sub]
-	$prob = $subredditsIdDist[$sub]
-	
-	# ignore super rare subreddits (<0.1% chance that average user has visited)
-	if ($globalDist -lt 0.0001)
-	{
-		continue;
-	}
-	
-	$multiplier = $prob / $globalDist;
-	
-	# This means that users are actually less likely than the average user to visit
-	# TODO: Decide if I want to move this threshold to the config file
-	if ($multiplier -lt 1)
-	{
-		continue;
-	}
-	
-	$subredditsProbMultipliers[$sub] = $multiplier
-}
-# End Process Data
+$names = Get-NamesFromIds -Ids $subredditsProbMultipliers.Keys
 
+$Results = [System.Collections.ArrayList]@()
 
-# Start Get Names
 [System.Collections.ArrayList]$ids = $subredditsProbMultipliers.Keys
-
-$body = @{
-	subredditIds = $ids
-}
-
-$names = Invoke-RestMethod -Uri "https://subredditstats.com/api/specificSubredditIdsToNames" `
-	-Method 'POST' `
-	-Headers @{ "Content-Type" = "text/plain" } `
-	-Body ($body | ConvertTo-Json)
-
-# End Get Names
-
-# Start Display Results
-$Results = [System.Collections.ArrayList]@()	
 
 foreach ($idx in 1..$names.Count)
 {	
 	$name = $names[$idx]
-	$sub = $ids[$idx]
+	$sub  = $ids[$idx]
 
 	if ($subredditsProbMultipliers.ContainsKey($sub))
 	{
@@ -134,11 +152,12 @@ $FilteredResults = $FilteredResults | Sort Probability -Desc | Select -First 25
 
 $FilteredResults | Export-CliXml Overlap.xml
 
+# Start Display Results
 
 # Generate a markdown table, optionally
 if ($generateMarkdown)
 {
-	. .\ConvertTo-Markdown
+	. .\ConvertTo-Markdown.ps1
 
 	$FilteredResults | Select `
 		@{ Name='subreddit'; Expression={"r/$($_.Name)"}}, `

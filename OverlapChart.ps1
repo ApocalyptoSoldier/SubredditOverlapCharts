@@ -17,7 +17,8 @@ function MakeBarSeries {
         [string]$Name,
         [double]$Value
     )
-    Try{
+    Try
+	{
         $series 					= $Chart.Series.Add($Name)
         $series.ChartType 			= $ChartTypes::Bar
         $series.Label 				= "$Name $Value"
@@ -33,12 +34,15 @@ function MakeBarSeries {
         [void]$series.Points.AddY($Value)
 	
     }
-    Catch{
+    Catch 
+	{
         Throw $_
     }
 }
 
-Try{
+# TODO: Look into adding logarithmic or similar scaling
+Try 
+{
 	$Overlap = Import-CliXMl .\Overlap.xml
 	
 	$Max = ($Overlap | Measure -Max Probability).Maximum
@@ -83,6 +87,7 @@ Try{
     $Chart.SaveImage($imageFile,'PNG')
     Start-Process $imageFile
 }
-Catch{
+Catch 
+{
     Throw $_
 }
